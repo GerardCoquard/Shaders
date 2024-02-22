@@ -30,7 +30,7 @@ Shader "Tecnocampus/GBufferShader"
                 float4 vertex : SV_POSITION;
                 float2 uv : TEXCOORD0;
                 float3 normal : NORMAL;
-                float2 depth : TEXCOORD0;
+                float2 depth : TEXCOORD1;
             };
 
             sampler2D _MainTex;

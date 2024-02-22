@@ -46,17 +46,19 @@ Shader "Tecnocampus/DeferredSpecularDefusedShader"
             float4 _LightPosition;
             float4 _LightDirection;
             float4 _LightProperties; // x=Range, y=Intensity,z=Spot Angle, w=cos(Half Spot Angle)
+
             int _UseShadowMap;
             sampler2D _ShadowMap;
             float4x4 _ShadowMapViewMatrix;
             float4x4 _ShadowMapProjectionMatrix;
             float _ShadowMapBias;
             float _ShadowMapStrength;
+            
 
-            float3 Normal2Texture(float3 _normal)
+            float3 Texture2Normal(float3 Texture)
             {
-                return (_normal + 1.0) * 0.5;
-            };
+                return (Texture - 0.5) * 2;
+            }
             
             float3 GetPositionFromZDepthViewInViewCoordinates(float ZDepthView, float2 UV, float4x4 InverseProjection)
             {
@@ -103,34 +105,61 @@ Shader "Tecnocampus/DeferredSpecularDefusedShader"
 
              fixed4 frag (VERTEX_OUT i) : SV_Target
              {
-                float3 Nn = normalize(Normal2Texture(tex2D(_RT1,i.uv)));
-                float4 l_color = tex2D(_RT0, i.uv);
+                float4 l_color = tex2D(_MainTex,i.uv);
+                float3 Nn = normalize(Texture2Normal(tex2D(_RT1,i.uv).xyz));
+                float4 albedoColor = tex2D(_RT0, i.uv);
                 float3 l_DifuseLighting = float3(0, 0, 0);
                 float3 l_Specular = float3(0, 0, 0);
                 float3 l_FullLighting = float3(0, 0, 0);
+                float l_ShadowMap = 0;
+                float l_depth = tex2D(_RT2, i.uv).x;
+                if(l_depth == 0.0) return l_color;
 
                 float3 l_LightDirection = _LightDirection.xyz;
-                float3 _WorldPos = GetPositionFromZDepthView(tex2D(_RT2,i.uv),i.uv,_InverseViewMatrix, _InverseProjectionMatrix);
-                float l_distance = length(_WorldPos - _LightPosition);
-                float l_Attenuation = saturate(1 - l_distance / _LightProperties.x);
+                float3 _WorldPos = GetPositionFromZDepthView(l_depth,i.uv,_InverseViewMatrix, _InverseProjectionMatrix);
+                
+                float l_Attenuation = 1.0;
         
-                if (_LightType == 2)
+                if (_UseShadowMap==1)
                 {
-                    l_LightDirection = normalize(_WorldPos - _LightPosition.xyz);
-
+                    float4 l_Vertex = mul(_ShadowMapViewMatrix, float4(_WorldPos, 1.0));
+                    l_Vertex= mul(_ShadowMapProjectionMatrix, l_Vertex);
+                    float l_Depth = l_Vertex.z / l_Vertex.w;
+                    float2 l_UV = float2(((l_Vertex.x / l_Vertex.w) / 2.0f) + 0.5f, ((l_Vertex.y / l_Vertex.w) / 2.0f) + 0.5f);
+                    #if SHADER_API_D3D9
+                    float l_ShadowMapDepth = ((tex2D(_ShadowMap, l_UV).x-0.5)*2.0)+ _ShadowMapBias;
+                    #elif SHADER_API_D3D11
+                    float l_ShadowMapDepth = (((1.0 - tex2D(_ShadowMap, l_UV).x)-0.5)*2.0)+ _ShadowMapBias;
+                    #else
+                    float l_ShadowMapDepth = _ShadowMapBias+tex2D(_ShadowMap, l_UV).x;
+                    #endif
+                    l_ShadowMap = l_Depth > l_ShadowMapDepth ? (1.0-_ShadowMapStrength) : 1.0;
+                    if (l_UV.x <= 0.0 || l_UV.x >= 1.0 || l_UV.y <= 0.0 || l_UV.y >= 1.0)
+                      l_ShadowMap = 1.0;
                 }
-                if (_LightType == 0)
+
+                if (_LightType == 2 || _LightType == 0)
                 {
-                    l_LightDirection = normalize(_WorldPos - _LightPosition.xyz);
+                    l_LightDirection = _WorldPos - _LightPosition.xyz;
+                    float l_distance = length(l_LightDirection);
+                    l_LightDirection/=l_distance;
+
+                    l_Attenuation =saturate(1 - l_distance / _LightProperties.x);
+                
+                    if (_LightType == 0)
+                    {
+                        l_LightDirection = normalize(_WorldPos - _LightPosition.xyz);
                         
-                    float l_DotSpot = dot(_LightDirection.xyz, l_LightDirection);
-                    float l_AngleAttenuation = saturate((l_DotSpot - _LightProperties.w) / (1.0 - _LightProperties.w));
-                    l_Attenuation *= l_AngleAttenuation;
+                        float l_DotSpot = dot(_LightDirection.xyz, l_LightDirection);
+                        float l_AngleAttenuation = saturate((l_DotSpot - _LightProperties.w) / (1.0 - _LightProperties.w));
+                        l_Attenuation *= l_AngleAttenuation;
 
+                    }
                 }
+                //l_Attenuation=1.0;
                 float Kd = saturate(dot(Nn, -l_LightDirection));
         
-                l_DifuseLighting += Kd * l_color.xyz * _LightColor.xyz * _LightProperties.y * l_Attenuation;
+                l_DifuseLighting += Kd * albedoColor.xyz * _LightColor.xyz * _LightProperties.y * l_Attenuation * l_ShadowMap;
                     
                     
                 /*
@@ -142,11 +171,12 @@ Shader "Tecnocampus/DeferredSpecularDefusedShader"
                 */
                 float3 l_CameraVector = normalize(_WorldPos - _WorldSpaceCameraPos);
                 float3 l_ReflectedVector = normalize(reflect(l_CameraVector, Nn));
-                float l_Ks = pow(saturate(dot(-_LightDirection.xyz, l_ReflectedVector)), 1/l_color.w);
+                float l_Ks = pow(saturate(dot(-_LightDirection.xyz, l_ReflectedVector)), 1/albedoColor.w);
                 
-                l_Specular = l_Ks * _LightColor.xyz * l_Attenuation * _LightProperties.y;
+                l_Specular = l_Ks * _LightColor.xyz * l_Attenuation * _LightProperties.y * l_ShadowMap;
                     
-                l_FullLighting = l_Specular + l_DifuseLighting;
+                l_FullLighting = l_color.xyz + l_Specular + l_DifuseLighting;
+                return float4(l_DifuseLighting, 1.0);
 
                 return float4(l_FullLighting, 1.0);
              }
