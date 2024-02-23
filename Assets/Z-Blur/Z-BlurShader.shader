@@ -11,7 +11,7 @@ Shader "Tecnocampus/Z-BlurShader"
         _MinZBlurPct("Min ZBlur Pct", Range(0.0, 1.0)) = 0.0
         _ShowDebug("Show debug", float) = 0.0
         _SampleDistance("Distance", Float) = 1
-        [KeywordEnum(Off, Debug, Full, On)] _DebugMode("Mode", Float) = 0
+        [KeywordEnum(Focused, Debug, Unfocused, Default)] _Mode("Mode", int) = 0
     }
     SubShader
     {
@@ -24,7 +24,7 @@ Shader "Tecnocampus/Z-BlurShader"
             #pragma vertex vert
             #pragma fragment frag
 
-            #pragma multi_compile_Off_Debug_Full_On
+            #pragma shader_feature_MODE_FOCUSED_MODE_DEBUG_MODE_UNFOCUSED_MODE_DEFAULT
 
             #include "UnityCG.cginc"
 
@@ -152,14 +152,17 @@ Shader "Tecnocampus/Z-BlurShader"
                     l_DebugColor = float4(0, 0, 1, 1);
                 }
 
-                #ifdef _Off
+                #ifdef _MODE_FOCUSED
                     return l_FocusedColor;
-                #elif _All
+                #elif _MODE_UNFOCUSED
                     return float4(l_UnfocusedColor,1);
-                #elif _Debug
+                #elif _MODE_DEBUG
                     return l_DebugColor;
-                #endif
+                #elif _MODE_DEFAULT
                     return float4(l_FocusedColor.xyz*(1.0 - l_ZBlurPct) + l_UnfocusedColor.xyz*l_ZBlurPct,1.0);
+                #endif
+
+                return l_DebugColor;
              }
              ENDCG
          }
