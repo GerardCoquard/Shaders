@@ -105,19 +105,23 @@ Shader "Tecnocampus/DeferredSpecularDefusedShader"
 
              fixed4 frag (VERTEX_OUT i) : SV_Target
              {
-                float4 l_color = tex2D(_MainTex,i.uv);
+                 //Sacamos propiedades necesarias;
+                 //- Color despues de pospos (después del ambient)
+                 //- Normales
+                 //- Color de la RT0 (color de lo que ve el GBuffer, sin ambient y sin nada)
+                 //- Shadowmap
+                 //- Depth del objeto en este pixel. Si es 0, quiere decir que no hay nada (depth infinita), asi q devolvemos el color que habia despues de pospo, ya que no hay nada que iluminar
+                 //- Dirección de la luz
+                 //- Posición de mundo de lo que hay en este pixel. La X y la Y las sabemos gracias a las UVs, la Z es el depth de la RT2
+                 float4 l_color = tex2D(_MainTex,i.uv);
                 float3 Nn = normalize(Texture2Normal(tex2D(_RT1,i.uv).xyz));
                 float4 albedoColor = tex2D(_RT0, i.uv);
-                float3 l_DifuseLighting = float3(0, 0, 0);
-                float3 l_Specular = float3(0, 0, 0);
-                float3 l_FullLighting = float3(0, 0, 0);
                 float l_ShadowMap = 0;
                 float l_depth = tex2D(_RT2, i.uv).x;
                 if(l_depth == 0.0) return l_color;
-
                 float3 l_LightDirection = _LightDirection.xyz;
                 float3 _WorldPos = GetPositionFromZDepthView(l_depth,i.uv,_InverseViewMatrix, _InverseProjectionMatrix);
-                
+                //Ponemos atenuación a 1 para las directionals
                 float l_Attenuation = 1.0;
         
                 if (_UseShadowMap==1)
@@ -137,46 +141,45 @@ Shader "Tecnocampus/DeferredSpecularDefusedShader"
                     if (l_UV.x <= 0.0 || l_UV.x >= 1.0 || l_UV.y <= 0.0 || l_UV.y >= 1.0)
                       l_ShadowMap = 1.0;
                 }
-
+                //Si la luz es point o spot:
                 if (_LightType == 2 || _LightType == 0)
                 {
+                    //Calculamos la direccion normalizada de la luz, y la distancia de la luz hasta la posicion del pixel
                     l_LightDirection = _WorldPos - _LightPosition.xyz;
                     float l_distance = length(l_LightDirection);
-                    l_LightDirection/=l_distance;
-
+                    l_LightDirection/=l_distance; //esto es lo mismo que hacer un normalize
+                    //Calculamos la atenuacion, haciendo current/max, en este caso distance/range, i haciendo saturate para que este entre 0 y 1 
                     l_Attenuation =saturate(1 - l_distance / _LightProperties.x);
-                
+                    //Si la luz es spot:
                     if (_LightType == 0)
                     {
-                        l_LightDirection = normalize(_WorldPos - _LightPosition.xyz);
-                        
+                        //Calculamos la atenuacion por angulo de la spot, cuando mas al centro mas alta la atenuacion. Esta se aplica encima de la que ya habia en base a la distancia
+                        //Miramos cual es el angulo entre la direccion de la luz a la posicion del pixel, y la direccion en la que enfoca la luz
                         float l_DotSpot = dot(_LightDirection.xyz, l_LightDirection);
+                        //Calculamos la atenuacion angular, haciendo current/max, en este caso "ni puta idea, lo que ponga", i haciendo saturate para que este entre 0 y 1 
                         float l_AngleAttenuation = saturate((l_DotSpot - _LightProperties.w) / (1.0 - _LightProperties.w));
+                        //Luego multiplicamos esta atenuacion angular a la de distancia que ya habia antes, para obtener la final
                         l_Attenuation *= l_AngleAttenuation;
-
                     }
                 }
-                //l_Attenuation=1.0;
+                //Calculamos Difuse:
+                //Kd = cuanto de paralela va la direccion de la luz con la normal del objeto. Si van paralelas, hay mucha difusa. A la que se va inclinando el angulo, cada vez baja mas el Kd, asi que la difusa disminuye
+                //Kd es mas alto cuando el angulo entre la normal i la direccion de la luz invertida es 0º, es decir, cuando son paralelos. En cambio, cuando el angulo es de 90º, consigue el Kd mas bajo de 0. Cuando el angulo es mas de 90º, el saturate lo dejara en 0 en vez de -1., 
                 float Kd = saturate(dot(Nn, -l_LightDirection));
-        
-                l_DifuseLighting += Kd * albedoColor.xyz * _LightColor.xyz * _LightProperties.y * l_Attenuation * l_ShadowMap;
-                    
-                    
-                /*
-                    float3 l_Nn = normalize(i.normal);
-                    float3 l_CameraVector = normalize(_WorldSpaceCameraPos);
-                    float3 l_Hn = normalize(l_CameraVector - _LightDirections[x].xyz);
-                        
-                    float3 l_Ks = pow(saturate(dot(l_Hn, l_Nn)), _SpecularPower);
-                */
+                float3 l_DifuseLighting = Kd * l_Attenuation * albedoColor.xyz * _LightColor.xyz * _LightProperties.y * l_ShadowMap;//Kd * atenuacion * color del pixel SIN pospo * color luz * intensidad luz * shadowmap?
+                //Calculamos Specular:
+                //Vector camara-pos_pixel
                 float3 l_CameraVector = normalize(_WorldPos - _WorldSpaceCameraPos);
+                //Vector reflejado de la cam-posPixel con la normal
                 float3 l_ReflectedVector = normalize(reflect(l_CameraVector, Nn));
+                 //Ks = cuanto de paralelo es el reflejado de la camara al pixel con la direccion de la luz invertida. Representa cuanto de directo va a la camara el rebote de la luz en ese pixel
+                 //Cuanto mas paralelos sean, mas parecido sera el vector reflejado (vector que representa la direccion de rebote directo perfecto en el objeto) a la direccion de la luz invvertida
+                 //Puede que aunque la luz no este iluminando ese pixel, el Ks sea muy alto. Eso es debido a que el Ks no tiene en cuenta la posicon, solo la dirección.
+                 //Para tener en cuenta si la luz te ilumina o no, se encarga la atenuacion
                 float l_Ks = pow(saturate(dot(-_LightDirection.xyz, l_ReflectedVector)), 1/albedoColor.w);
-                
-                l_Specular = l_Ks * _LightColor.xyz * l_Attenuation * _LightProperties.y * l_ShadowMap;
-                    
-                l_FullLighting = l_color.xyz + l_Specular + l_DifuseLighting;
-                return float4(l_DifuseLighting, 1.0);
+                float3 l_Specular = l_Ks * l_Attenuation * _LightColor.xyz * _LightProperties.y * l_ShadowMap;//Ks * atenuación * color luz * intensidad luz * shadowmap?
+                 //Calculamos full light con color CON pospo(con ambient) + specular + difusa
+                float3 l_FullLighting = l_color.xyz + l_Specular + l_DifuseLighting;
 
                 return float4(l_FullLighting, 1.0);
              }
